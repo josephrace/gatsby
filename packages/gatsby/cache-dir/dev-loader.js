@@ -1,10 +1,49 @@
 import { BaseLoader, PageResourceStatus } from "./loader"
 import { findPath } from "./find-path"
+import * as pDefer from "p-defer"
+
+const WAITING_FOR_HOT_UPDATE_TIMEOUT = 1000
+const COMPONENT_GRABBING_RETRY_LIMIT = 5
 
 class DevLoader extends BaseLoader {
+  waitingForHotUpdatePromise = pDefer()
+
   constructor(syncRequires, matchPaths) {
-    const loadComponent = (chunkName, key = `components`) =>
-      Promise.resolve(this.syncRequires[key][chunkName])
+    const loadComponent = (chunkName, key = `components`, retry = 0) => {
+      const module = this.syncRequires[key][chunkName]
+
+      if (!module && retry < COMPONENT_GRABBING_RETRY_LIMIT) {
+        return new Promise(resolve => {
+          const checkAgain = () => loadComponent(chunkName, key, retry + 1)
+
+          console.debug(`Don't have ${key}["${chunkName}"] on #${retry + 1}`)
+
+          let waitingForHotUpdate = setTimeout(() => {
+            console.debug(
+              `CheckAgain(Timeout): Don't have ${key}["${chunkName}"] on #${
+                retry + 1
+              }`
+            )
+            waitingForHotUpdate = undefined
+            resolve(checkAgain())
+          }, WAITING_FOR_HOT_UPDATE_TIMEOUT)
+
+          this.waitingForHotUpdatePromise.promise.then(() => {
+            if (waitingForHotUpdate) {
+              console.debug(
+                `CheckAgain(HMR): Don't have ${key}["${chunkName}"] on #${
+                  retry + 1
+                }`
+              )
+              clearTimeout(waitingForHotUpdate)
+              resolve(checkAgain())
+            }
+          })
+        })
+      }
+
+      return Promise.resolve(module)
+    }
 
     super(loadComponent, matchPaths)
 
@@ -46,6 +85,8 @@ class DevLoader extends BaseLoader {
 
   updateSyncRequires(syncRequires) {
     this.syncRequires = syncRequires
+    this.waitingForHotUpdatePromise.resolve()
+    this.waitingForHotUpdatePromise = pDefer()
   }
 }
 

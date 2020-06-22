@@ -152,6 +152,8 @@ export class BaseLoader {
     this.prefetchCompleted = new Set()
     this.loadComponent = loadComponent
     setMatchPaths(matchPaths)
+
+    window.___dloader = this
   }
 
   setApiRunner(apiRunner) {
@@ -192,43 +194,22 @@ export class BaseLoader {
       this.loadPageDataJson(pagePath),
     ])
       .then(allData => {
-        const result = allData[1]
+        const [appData, result] = allData
         if (result.status === PageResourceStatus.Error) {
           return {
             status: PageResourceStatus.Error,
           }
         }
+        const pageData = result.payload
 
-        let pageData = result.payload
-        const { componentChunkName, moduleDependencies = [] } = pageData
-
-        return Promise.all([
-          this.loadComponent(componentChunkName),
-          this.fetchModuleDependencies(moduleDependencies),
-        ]).then(([component]) => {
-          const finalResult = { createdAt: new Date() }
-          let pageResources
-          if (!component) {
-            finalResult.status = PageResourceStatus.Error
-          } else {
-            finalResult.status = PageResourceStatus.Success
-            if (result.notFound === true) {
-              finalResult.notFound = true
-            }
-            pageData = Object.assign(pageData, {
-              webpackCompilationHash: allData[0]
-                ? allData[0].webpackCompilationHash
-                : ``,
-            })
-            pageResources = toPageResources(pageData, component)
-            finalResult.payload = pageResources
-            emitter.emit(`onPostLoadPageResources`, {
-              page: pageResources,
-              pageResources,
-            })
-          }
-          this.pageDb.set(pagePath, finalResult)
-          // undefined if final result is an error
+        return this.processPageData(pagePath, pageData, {
+          webpackCompilationHash: appData?.webpackCompilationHash,
+          notFound: result.notFound,
+        }).then(pageResources => {
+          emitter.emit(`onPostLoadPageResources`, {
+            page: pageResources,
+            pageResources,
+          })
           return pageResources
         })
       })
@@ -244,6 +225,38 @@ export class BaseLoader {
 
     this.inFlightDb.set(pagePath, inFlight)
     return inFlight
+  }
+
+  processPageData(
+    pagePath,
+    pageData,
+    { webpackCompilationHash, notFound } = {}
+  ) {
+    const { componentChunkName, moduleDependencies = [] } = pageData
+
+    return Promise.all([
+      this.loadComponent(componentChunkName),
+      this.fetchModuleDependencies(moduleDependencies),
+    ]).then(([component]) => {
+      const finalResult = { createdAt: new Date() }
+      let pageResources
+      if (!component) {
+        finalResult.status = PageResourceStatus.Error
+      } else {
+        finalResult.status = PageResourceStatus.Success
+        if (notFound === true) {
+          finalResult.notFound = true
+        }
+        pageData = Object.assign(pageData, {
+          webpackCompilationHash: webpackCompilationHash || ``,
+        })
+        pageResources = toPageResources(pageData, component)
+        finalResult.payload = pageResources
+      }
+      this.pageDb.set(pagePath, finalResult)
+      // undefined if final result is an error
+      return pageResources
+    })
   }
 
   // returns undefined if loading page ran into errors
